@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -8,9 +9,8 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"time"
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 )
 
@@ -45,52 +45,6 @@ func selectInterface(interfaceName string) (pcap.Interface, error) {
 	return interfaces[index], nil
 }
 
-type ChannelWithPort struct {
-	port uint16
-	packetChannel chan <- []byte
-}
-
-func forwardPackets(packetChannel chan gopacket.Packet, registerSocket <- chan ChannelWithPort, closeSocket <- chan uint16) {
-	packetChannels := make(map[uint16]chan <- []byte)
-	for {
-		select {
-		case packet := <- packetChannel:
-			udpLayer := packet.Layer(layers.LayerTypeUDP)
-			if udpLayer == nil {
-				log.Printf("received a packet without udp layer: %v\n", hex.EncodeToString(packet.Data()))
-				continue
-			}
-
-			udp := udpLayer.(*layers.UDP)
-
-			channel, ok := packetChannels[uint16(udp.DstPort)]
-			if !ok {
-				continue
-			}
-
-			data := make([]byte, len(udp.Payload))
-			copy(data, udp.Payload)
-			channel <- data
-
-		case channelWithPort := <- registerSocket:
-			if _, ok := packetChannels[channelWithPort.port]; ok {
-				log.Printf("duplicated socket with port %v\n", channelWithPort.port)
-				continue
-			}
-
-			packetChannels[channelWithPort.port] = channelWithPort.packetChannel
-
-		case port := <- closeSocket:
-			if _, ok := packetChannels[port]; !ok {
-				log.Printf("can not found socket with port %v\n", port)
-				continue
-			}
-
-			delete(packetChannels, port)
-		}
-	}
-}
-
 func main() {
 	showInterfaces := flag.Bool("s", false, "To show all the usable network interfaces")
 	interfaceName := flag.String("i", "eth0", "The network interface you want to sniff")
@@ -122,11 +76,14 @@ func main() {
 	}
 	defer closeHandle()
 
-	packetChannel := packetSource.Packets()
-	registerSocket := make(chan ChannelWithPort)
-	closeSocket := make(chan uint16)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
 
-	go forwardPackets(packetChannel, registerSocket, closeSocket)
+	packetChannel := packetSource.Packets()
+	registerSocketChan := make(chan ChannelWithPort)
+	closeSocketChan := make(chan uint16)
+
+	go packetRouter(ctx, packetChannel, registerSocketChan, closeSocketChan)
 
 	listenAddrPort, err := parseAddrPortWithDefaultPort(*listenEndpoint, 53)
 	if err != nil {
@@ -160,14 +117,8 @@ func main() {
 			defer upstream.Close()
 			localAddrPort, _ := netip.ParseAddrPort(upstream.LocalAddr().String())
 
-			upstreamDownChannel := make(chan []byte)
-			registerSocket <- ChannelWithPort{
-				localAddrPort.Port(),
-				upstreamDownChannel,
-			}
-			defer func() {
-				closeSocket <- localAddrPort.Port()
-			}()
+			upstreamChannel, closeUpstreamChannel := registerSocket(registerSocketChan, closeSocketChan, localAddrPort.Port())
+			defer closeUpstreamChannel()
 
 			_, err = upstream.Write(data)
 			if err != nil {
@@ -176,7 +127,18 @@ func main() {
 			}
 			log.Printf("send to upstream from %v: %v\n", localAddrPort.Port(), hex.EncodeToString(data))
 
-			data := <- upstreamDownChannel
+			receiveTimeout, cancel := context.WithTimeout(ctx, 10 * time.Second)
+			defer cancel()
+
+			var data []byte
+			select {
+			case data = <- upstreamChannel:
+				break
+			
+			case <- receiveTimeout.Done():
+				log.Printf("timeout from %v\n", localAddrPort.Port())
+				return
+			}
 			log.Printf("receive from upstream at %v: %v\n", localAddrPort.Port(), hex.EncodeToString(data))
 
 			_, err = server.WriteToUDPAddrPort(data, clientAddrPort)
