@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/gopacket"
 	"github.com/google/gopacket/pcap"
 )
 
@@ -43,6 +43,20 @@ func selectInterface(interfaceName string) (pcap.Interface, error) {
 	}
 
 	return interfaces[index], nil
+}
+
+func createPacketSource(iface pcap.Interface, remoteAddrPort netip.AddrPort) (*gopacket.PacketSource, func(), error) {
+	handle, err := pcap.OpenLive(iface.Name, 65535, false, pcap.BlockForever)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	err = handle.SetBPFFilter(fmt.Sprintf("src host %v && udp && src port %v && ip[6] & 0x40 == 0", remoteAddrPort.Addr(), remoteAddrPort.Port()))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return gopacket.NewPacketSource(handle, handle.LinkType()), handle.Close, nil
 }
 
 func main() {
@@ -79,11 +93,8 @@ func main() {
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 
-	packetChannel := packetSource.Packets()
-	registerSocketChan := make(chan ChannelWithPort)
-	closeSocketChan := make(chan uint16)
-
-	go packetRouter(ctx, packetChannel, registerSocketChan, closeSocketChan)
+	router := newRouter()
+	go router.route(ctx, packetSource.Packets())
 
 	listenAddrPort, err := parseAddrPortWithDefaultPort(*listenEndpoint, 53)
 	if err != nil {
@@ -106,7 +117,7 @@ func main() {
 
 		data := make([]byte, size)
 		copy(data, buffer[0:size])
-		log.Printf("receive request from %v: %v\n", clientAddrPort, hex.EncodeToString(data))
+		log.Printf("receive request from %v: %v\n", clientAddrPort, len(data))
 
 		go func() {
 			upstream, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(upstreamAddrPort))
@@ -117,7 +128,7 @@ func main() {
 			defer upstream.Close()
 			localAddrPort, _ := netip.ParseAddrPort(upstream.LocalAddr().String())
 
-			upstreamChannel, closeUpstreamChannel := registerSocket(registerSocketChan, closeSocketChan, localAddrPort.Port())
+			upstreamChannel, closeUpstreamChannel := router.register(localAddrPort.Port())
 			defer closeUpstreamChannel()
 
 			_, err = upstream.Write(data)
@@ -125,7 +136,7 @@ func main() {
 				log.Println(err)
 				return
 			}
-			log.Printf("send to upstream from %v: %v\n", localAddrPort.Port(), hex.EncodeToString(data))
+			log.Printf("send to upstream from %v: %v\n", localAddrPort.Port(), len(data))
 
 			receiveTimeout, cancel := context.WithTimeout(ctx, 10 * time.Second)
 			defer cancel()
@@ -139,14 +150,14 @@ func main() {
 				log.Printf("timeout from %v\n", localAddrPort.Port())
 				return
 			}
-			log.Printf("receive from upstream at %v: %v\n", localAddrPort.Port(), hex.EncodeToString(data))
+			log.Printf("receive from upstream at %v: %v\n", localAddrPort.Port(), len(data))
 
 			_, err = server.WriteToUDPAddrPort(data, clientAddrPort)
 			if err != nil {
 				log.Println(err)
 				return
 			}
-			log.Printf("send response to %v: %v\n", clientAddrPort, hex.EncodeToString(data))
+			log.Printf("send response to %v: %v\n", clientAddrPort, len(data))
 		}()
 	}
 }

@@ -2,26 +2,37 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"log"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
 
-type ChannelWithPort struct {
+type channelWithPort struct {
 	port uint16
 	packetChannel chan <- []byte
 }
 
-func packetRouter(ctx context.Context, packetSource chan gopacket.Packet, registerSocketChan <- chan ChannelWithPort, closeSocketChan <- chan uint16) {
+type packetRouter struct {
+	registerSocketChan chan channelWithPort
+	closeSocketChan chan uint16
+}
+
+func newRouter() *packetRouter {
+	return &packetRouter{
+		registerSocketChan: make(chan channelWithPort),
+		closeSocketChan: make(chan uint16),
+	}
+}
+
+func (r *packetRouter) route(ctx context.Context, packetSource chan gopacket.Packet) {
 	packetChannels := make(map[uint16]chan <- []byte)
 	for {
 		select {
 		case packet := <- packetSource:
 			udpLayer := packet.Layer(layers.LayerTypeUDP)
 			if udpLayer == nil {
-				log.Printf("received a packet without udp layer: %v\n", hex.EncodeToString(packet.Data()))
+				log.Printf("received a packet without udp layer: %v\n", len(packet.Data()))
 				continue
 			}
 
@@ -34,7 +45,7 @@ func packetRouter(ctx context.Context, packetSource chan gopacket.Packet, regist
 
 			channel <- udp.Payload
 
-		case channelWithPort := <- registerSocketChan:
+		case channelWithPort := <- r.registerSocketChan:
 			if _, ok := packetChannels[channelWithPort.port]; ok {
 				log.Printf("duplicated socket with port %v\n", channelWithPort.port)
 				continue
@@ -42,7 +53,7 @@ func packetRouter(ctx context.Context, packetSource chan gopacket.Packet, regist
 
 			packetChannels[channelWithPort.port] = channelWithPort.packetChannel
 
-		case port := <- closeSocketChan:
+		case port := <- r.closeSocketChan:
 			if _, ok := packetChannels[port]; !ok {
 				log.Printf("can not found socket with port %v\n", port)
 				continue
@@ -56,13 +67,13 @@ func packetRouter(ctx context.Context, packetSource chan gopacket.Packet, regist
 	}
 }
 
-func registerSocket(registerSocketChannel chan <- ChannelWithPort, closeSocketChannel chan <- uint16, port uint16) (<- chan []byte, func()) {
+func (r *packetRouter) register(port uint16) (<- chan []byte, func()) {
 	packetChannel := make(chan []byte)
-	registerSocketChannel <- ChannelWithPort{
+	r.registerSocketChan <- channelWithPort{
 		port,
 		packetChannel,
 	}
 	return packetChannel, func() {
-		closeSocketChannel <- port
+		r.closeSocketChan <- port
 	}
 }
