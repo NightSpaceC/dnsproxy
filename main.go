@@ -51,7 +51,7 @@ func createPacketSource(iface pcap.Interface, remoteAddrPort netip.AddrPort) (*g
 		return nil, nil, err
 	}
 
-	err = handle.SetBPFFilter(fmt.Sprintf("src host %v && udp && src port %v && ip[6] & 0x40 == 0", remoteAddrPort.Addr(), remoteAddrPort.Port()))
+	err = handle.SetBPFFilter(fmt.Sprintf("src host %v && src port %v && udp[18:2] != 0", remoteAddrPort.Addr(), remoteAddrPort.Port()))
 	if err != nil {
 		return nil, nil, err
 	}
