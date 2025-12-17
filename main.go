@@ -60,10 +60,10 @@ func createPacketSource(iface pcap.Interface, remoteAddrPort netip.AddrPort) (*g
 }
 
 func main() {
-	showInterfaces := flag.Bool("s", false, "To show all the usable network interfaces")
-	interfaceName := flag.String("i", "eth0", "The network interface you want to sniff")
-	listenEndpoint :=  flag.String("l", "127.0.0.1:53", "The address and port you want to listen")
-	upstreamEndpoint :=  flag.String("u", "8.8.8.8", "The upstream server")
+	showInterfaces := flag.Bool("s", false, "show all the network interfaces")
+	interfaceName := flag.String("i", "eth0", "network interface")
+	listenEndpoint :=  flag.String("l", "127.0.0.1", "proxy listen address")
+	upstreamEndpoint :=  flag.String("u", "8.8.8.8", "upstream server address")
 	flag.Parse()
 
 	if *showInterfaces {
