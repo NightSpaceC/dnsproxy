@@ -39,26 +39,23 @@ func main() {
 			msg.Extra = append(msg.Extra, opt)
 		}
 
-		if *alwaysWithSubnet {
-			subnet := findSUBNET(opt.Option)
-			if subnet == nil {
-				remoteAddrPort, err := netip.ParseAddrPort(resWriter.RemoteAddr().String())
-				if err != nil {
-					log.Println(err)
-					return
-				}
-				subnet = &dns.EDNS0_SUBNET{
-					Code: dns.EDNS0SUBNET,
-					Family: 1,
-					SourceNetmask: 32,
-					Address: remoteAddrPort.Addr().AsSlice(),
-				}
-				if remoteAddrPort.Addr().Is6() {
-					subnet.Family = 2
-					subnet.SourceNetmask = 128
-				}
-				opt.Option = append(opt.Option, subnet)
+		if *alwaysWithSubnet && findSUBNET(opt.Option) == nil {
+			remoteAddrPort, err := netip.ParseAddrPort(resWriter.RemoteAddr().String())
+			if err != nil {
+				log.Println(err)
+				return
 			}
+			subnet := &dns.EDNS0_SUBNET{
+				Code: dns.EDNS0SUBNET,
+				Family: 1,
+				SourceNetmask: 32,
+				Address: remoteAddrPort.Addr().AsSlice(),
+			}
+			if remoteAddrPort.Addr().Is6() {
+				subnet.Family = 2
+				subnet.SourceNetmask = 128
+			}
+			opt.Option = append(opt.Option, subnet)
 		}
 
 		upstream, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(upstreamAddrPort))
