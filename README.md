@@ -1,4 +1,6 @@
 # dnsproxy
+**The master branch was deprecated, please use [nopcap](https://github.com/NightSpaceC/dnsproxy/tree/nopcap)**
+
 This is a DNS proxy to let you get correct response when GFW is polluting the network.
 
 A feature of the pollution packets from GFW is that they don't support EDNS and have no additional field.
